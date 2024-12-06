@@ -220,64 +220,85 @@ optimizer_D = optim.Adam(discriminator.parameters(), lr=lr, betas=(beta1, 0.999)
 optimizer_TE = optim.Adam(text_encoder.parameters(), lr=lr, betas=(beta1, 0.999))
 
 # %% [code] {"execution":{"iopub.status.busy":"2024-12-03T15:12:34.136509Z","iopub.execute_input":"2024-12-03T15:12:34.137670Z","iopub.status.idle":"2024-12-03T15:35:16.776035Z","shell.execute_reply.started":"2024-12-03T15:12:34.137604Z","shell.execute_reply":"2024-12-03T15:35:16.774946Z"},"jupyter":{"outputs_hidden":false}}
-import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
 from tqdm import tqdm
 
-epochs = 50  # Adjust based on your needs
+def train_gan(train_loader, text_encoder, generator, discriminator, 
+              optimizer_G, optimizer_D, optimizer_TE, criterion, device, epochs=10):
+    for epoch in range(epochs):
+        generator.train()
+        discriminator.train()
+        text_encoder.train()
 
-for epoch in range(epochs):
-    generator.train()
-    discriminator.train()
-    text_encoder.train()
+        total_d_loss = 0
+        total_g_loss = 0
 
-    for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
-        images = batch['image'].to(device)
-        input_ids = batch['input_ids'].to(device)
-        attention_mask = batch['attention_mask'].to(device)
+        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
+            images = batch['image'].to(device)
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
 
-        batch_size = images.size(0)
+            batch_size = images.size(0)
 
-        # Generate labels
-        real_labels = torch.ones(batch_size).to(device)
-        fake_labels = torch.zeros(batch_size).to(device)
+            # Generate labels
+            real_labels = torch.ones(batch_size).to(device)
+            fake_labels = torch.zeros(batch_size).to(device)
 
-        # Train Text Encoder
-        text_embeddings = text_encoder(input_ids)  # Shape: (batch_size, embed_dim)
+            # Train Text Encoder and get text embeddings
+            optimizer_TE.zero_grad()
+            text_embeddings = text_encoder(input_ids)
 
-        # Train Discriminator
-        discriminator.zero_grad()
+            # Train Discriminator
+            optimizer_D.zero_grad()
 
-        # Real images
-        outputs = discriminator(images, text_embeddings)
-        d_loss_real = criterion(outputs, real_labels)
-        d_loss_real.backward()
+            # Real images
+            real_outputs = discriminator(images, text_embeddings)
+            d_loss_real = criterion(real_outputs, real_labels)
+            
+            # Fake images
+            noise = torch.randn(batch_size, 100).to(device)
+            with torch.no_grad():
+                fake_images = generator(noise, text_embeddings.detach())
+            
+            fake_outputs = discriminator(fake_images.detach(), text_embeddings.detach())
+            d_loss_fake = criterion(fake_outputs, fake_labels)
+            
+            # Total discriminator loss
+            d_loss = d_loss_real + d_loss_fake
+            d_loss.backward(retain_graph=True)
+            optimizer_D.step()
 
-        # Fake images
-        noise = torch.randn(batch_size, 100).to(device)
-        fake_images = generator(noise, text_embeddings)
-        outputs = discriminator(fake_images.detach(), text_embeddings)
-        d_loss_fake = criterion(outputs, fake_labels)
-        d_loss_fake.backward()
+            # Train Generator
+            optimizer_G.zero_grad()
+            
+            # Regenerate fake images with gradient flow
+            noise = torch.randn(batch_size, 100).to(device)
+            fake_images = generator(noise, text_embeddings)
+            g_outputs = discriminator(fake_images, text_embeddings)
+            g_loss = criterion(g_outputs, real_labels)
+            g_loss.backward()
+            optimizer_G.step()
 
-        d_loss = d_loss_real + d_loss_fake
-        optimizer_D.step()
+            # Optionally update text encoder
+            optimizer_TE.step()
 
-        # Train Generator
-        generator.zero_grad()
-        outputs = discriminator(fake_images, text_embeddings)
-        g_loss = criterion(outputs, real_labels)
-        g_loss.backward()
-        optimizer_G.step()
+            # Accumulate losses
+            total_d_loss += d_loss.item()
+            total_g_loss += g_loss.item()
 
-        # Optionally, update text encoder
-        text_encoder.zero_grad()
-        optimizer_TE.step()
+        # Print epoch summary
+        print(f"Epoch [{epoch+1}/{epochs}], Avg Loss D: {total_d_loss/len(train_loader):.4f}, Avg Loss G: {total_g_loss/len(train_loader):.4f}")
 
-    print(f"Epoch [{epoch+1}/{epochs}], Loss D: {d_loss.item()}, Loss G: {g_loss.item()}")
-    # Save models after each epoch
-    torch.save(generator.state_dict(), f'generator_epoch_{epoch+1}.pth')
-    torch.save(discriminator.state_dict(), f'discriminator_epoch_{epoch+1}.pth')
-    torch.save(text_encoder.state_dict(), f'text_encoder_epoch_{epoch+1}.pth')
+        # Save models after each epoch
+        torch.save(generator.state_dict(), f'generator_epoch_{epoch+1}.pth')
+        torch.save(discriminator.state_dict(), f'discriminator_epoch_{epoch+1}.pth')
+        torch.save(text_encoder.state_dict(), f'text_encoder_epoch_{epoch+1}.pth')
+
+# Usage in main training script
+train_gan(train_loader, text_encoder, generator, discriminator, 
+          optimizer_G, optimizer_D, optimizer_TE, criterion, device, epochs=10)
 
 # %% [code] {"execution":{"iopub.status.busy":"2024-12-03T16:06:58.669814Z","iopub.execute_input":"2024-12-03T16:06:58.670229Z","iopub.status.idle":"2024-12-03T16:06:58.702517Z","shell.execute_reply.started":"2024-12-03T16:06:58.670196Z","shell.execute_reply":"2024-12-03T16:06:58.701433Z"},"jupyter":{"outputs_hidden":false}}
 import matplotlib.pyplot as plt
